@@ -18,15 +18,14 @@
 
 """IOA runtime utilities: checkpointed EE delta policy runner (robot-agnostic).
 
-이 모듈은 ROS2, MoveIt, 특정 로봇(예: OMY-F3M)에 의존하지 않고,
-순수하게 다음 역할만 수행한다:
+ROS2, MoveIt, and robot-specific layers are intentionally excluded; this module:
 
-- 학습된 ee-delta BC 정책 로드 (PyTorch checkpoint)
-- 현재 EE pose와 타깃 pose로부터 에러 벡터 err_vec = [pos_err(3), rpy_err(3)] 계산
-- 에러 벡터를 정책에 넣어 ΔEE = [Δpos(3), Δrpy(3)] 추론
-- (옵션) 주기 dt를 이용해 EE 속도 (v_pos, v_rot) 계산
+- loads a trained EE-delta BC policy (PyTorch checkpoint)
+- computes error vectors err_vec = [pos_err(3), rpy_err(3)] from EE vs target poses
+- feeds the error into the policy to predict ΔEE = [Δpos(3), Δrpy(3)]
+- optionally converts ΔEE + dt into EE velocities (v_pos, v_rot)
 
-로봇별 IK/Servo, 조인트 명령 퍼블리시는 별도의 통합 레이어에서 담당한다.
+Per-robot IK/servo control and joint command publication are handled elsewhere.
 """
 
 from __future__ import annotations
@@ -87,20 +86,19 @@ def quat_to_rpy(qx: float, qy: float, qz: float, qw: float) -> Tuple[float, floa
 class IOAPolicyRunner:
     """Robot-agnostic EE-delta policy runner.
 
-    - ckpt_path 에는 다음 키를 포함한 PyTorch checkpoint가 저장되어 있다고 가정한다:
+    Assumes the checkpoint contains:
         - "model_state_dict"
         - "obs_mean", "obs_std"
         - "act_mean", "act_std"
 
-    - 관측은 EE pose와 target pose의 차이로부터 만들어진
-      err_vec = [pos_err(3), rpy_err(3)] (base frame 기준)이다.
+    Observations are err_vec = [pos_err(3), rpy_err(3)] computed in the base frame.
     """
 
     def __init__(self, ckpt_path: str | Path, device: str | None = None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.ckpt_path = Path(ckpt_path)
 
-        # 모델 및 정규화 통계
+        # Model and normalization stats
         self.model = EEDeltaPolicy(obs_dim=6, act_dim=6, hidden_dim=128).to(self.device)
         self.obs_mean: np.ndarray | None = None
         self.obs_std: np.ndarray | None = None
@@ -110,7 +108,7 @@ class IOAPolicyRunner:
         self._load_policy(self.ckpt_path)
 
     # ------------------------------------------------------------------
-    # Checkpoint 로드 / 정규화 복원
+    # Checkpoint loading / normalization restoration
     # ------------------------------------------------------------------
     def _load_policy(self, path: Path) -> None:
         if not path.is_file():
@@ -127,7 +125,7 @@ class IOAPolicyRunner:
         self.act_std = np.array(ckpt["act_std"]).reshape(1, -1).astype(np.float32)
 
     # ------------------------------------------------------------------
-    # 에러 벡터 계산 유틸: EE pose vs target pose
+    # Error vector utility: EE pose vs target pose
     # ------------------------------------------------------------------
     @staticmethod
     def compute_error_from_poses(
@@ -172,7 +170,7 @@ class IOAPolicyRunner:
         return err_vec
 
     # ------------------------------------------------------------------
-    # 정책 호출: err_vec -> d_ee
+    # Policy invocation: err_vec -> d_ee
     # ------------------------------------------------------------------
     def predict_delta(self, err_vec: np.ndarray) -> np.ndarray:
         """Predict ΔEE = [d_pos(3), d_rpy(3)] from error vector.
@@ -203,7 +201,7 @@ class IOAPolicyRunner:
         return self.predict_delta(err_vec)
 
     # ------------------------------------------------------------------
-    # (옵션) ΔEE와 dt로부터 속도 계산
+    # Optional ΔEE + dt -> velocity conversion
     # ------------------------------------------------------------------
     @staticmethod
     def delta_to_twist(
@@ -233,7 +231,7 @@ class IOAPolicyRunner:
 
 
 if __name__ == "__main__":
-    # 간단한 사용 예시 (더미 값):
+    # Simple usage example (dummy values):
     ckpt = "path/to/ee_bc_policy_1.pt"
     runner = IOAPolicyRunner(ckpt)
 
